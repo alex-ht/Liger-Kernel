@@ -22,6 +22,7 @@ from liger_kernel.transformers.model.llama import lce_forward_deprecated as llam
 from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
 from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
+from liger_kernel.transformers.model.mistral3 import lce_forward as mistral3_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
@@ -463,6 +464,71 @@ def apply_liger_kernel_to_mistral(
             _patch_rms_norm_module(base_model.norm)
 
         for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_mistral3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Mistral models
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.mistral import modeling_mistral
+    from transformers.models.mistral3 import modeling_mistral3
+    from transformers.models.mistral.modeling_mistral import MistralModel
+    from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
+
+    if rope:
+        modeling_mistral.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_mistral.MistralRMSNorm = LigerRMSNorm
+        modeling_mistral3.Mistral3RMSNorm = LigerRMSNorm
+    if cross_entropy:
+        modeling_mistral.CrossEntropyLoss = LigerCrossEntropyLoss
+        modeling_mistral3.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
+        modeling_mistral3.Mistral3ForConditionalGeneration.forward = mistral3_lce_forward
+    if swiglu:
+        modeling_mistral.MistralMLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Mistral3ForConditionalGeneration = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.model.language_model.norm)
+
+        for decoder_layer in base_model.model.language_model.layers:
             if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
@@ -1506,6 +1572,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
+    "mistral3": apply_liger_kernel_to_mistral3,
     "mixtral": apply_liger_kernel_to_mixtral,
     "olmo2": apply_liger_kernel_to_olmo2,
     "qwen2": apply_liger_kernel_to_qwen2,
