@@ -6,7 +6,6 @@ from typing import Union
 import torch
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.mistral3.modeling_mistral3 import MISTRAL3_INPUTS_DOCSTRING
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
 from transformers.utils import LossKwargs
@@ -20,7 +19,6 @@ from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(MISTRAL3_INPUTS_DOCSTRING)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
