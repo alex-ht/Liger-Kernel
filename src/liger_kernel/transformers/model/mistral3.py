@@ -36,6 +36,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     image_sizes: Optional[torch.Tensor] = None,
+    skip_logits: Optional[bool] = None,
     **kwargs: Unpack[KwargsForCausalLM],
 ) -> Union[Tuple, Mistral3CausalLMOutputWithPast]:
     r"""
