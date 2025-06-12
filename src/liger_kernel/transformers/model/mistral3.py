@@ -141,7 +141,7 @@ def lce_forward(
     if skip_logits:
         loss = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
-            lm_head_weight=self.language_model.lm_head.weight,
+            lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
             hidden_size=self.config.text_config.hidden_size,
@@ -149,7 +149,7 @@ def lce_forward(
         )
 
     else:
-        logits = self.language_model.lm_head(kept_hidden_states)
+        logits = self.lm_head(kept_hidden_states)
 
         loss = None
         if labels is not None:
