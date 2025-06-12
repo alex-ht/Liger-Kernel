@@ -6,7 +6,6 @@ from typing import Union
 import torch
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.mistral3.modeling_mistral3 import _CONFIG_FOR_DOC
 from transformers.models.mistral3.modeling_mistral3 import MISTRAL3_INPUTS_DOCSTRING
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
@@ -130,28 +129,37 @@ def lce_forward(
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
-    logits = outputs[0]
-
+    shift_labels = kwargs.pop("shift_labels", None)
     loss = None
-    if labels is not None:
-        # Shift so that tokens < n predict n
-        if attention_mask is not None:
-            # we use the input attention mask to shift the logits and labels, because it is 2D.
-            # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
-            shift_attention_mask = attention_mask[:, -(logits.shape[1] - 1) :].to(logits.device)
-            shift_logits = logits[..., :-1, :][shift_attention_mask.to(logits.device) != 0].contiguous()
-            shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
-        else:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        loss = self.loss_function(
-            logits=shift_logits.view(-1, shift_logits.size(-1)),
-            labels=shift_labels.view(-1).to(shift_logits.device),
-            vocab_size=self.config.text_config.vocab_size,
-            **kwargs
+    logits = None
+
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but labels and shift_labels are None")
+
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits:
+        loss = LigerForCausalLMLoss(
+            hidden_states=kept_hidden_states,
+            lm_head_weight=self.language_model.lm_head.weight,
+            labels=labels,
+            shift_labels=shift_labels,
+            hidden_size=self.config.text_config.hidden_size,
+            **kwargs,
         )
 
+    else:
+        logits = self.language_model.lm_head(kept_hidden_states)
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                vocab_size=self.config.text_config.vocab_size,
+                **kwargs,
+            )
     if not return_dict:
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output
