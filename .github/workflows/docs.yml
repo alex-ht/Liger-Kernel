@@ -2,11 +2,13 @@ name: Publish documentation
 on:
   push:
     branches:
-      - gh-pages
+      - main
+
 permissions:
   contents: write
 jobs:
   deploy:
+    if: False
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -7,16 +7,10 @@ import torch
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
-from transformers.models.qwen3_moe.modeling_qwen3_moe import _CONFIG_FOR_DOC
-from transformers.models.qwen3_moe.modeling_qwen3_moe import QWEN3_MOE_INPUTS_DOCSTRING
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-@add_start_docstrings_to_model_forward(QWEN3_MOE_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: Optional[torch.LongTensor] = None,
@@ -31,7 +25,8 @@ def lce_forward(
     output_router_logits: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
-    **loss_kwargs,
+    skip_logits: Optional[bool] = None,
+    **kwargs,
 ) -> MoeCausalLMOutputWithPast:
     r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -86,6 +81,7 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         output_router_logits=output_router_logits,
         cache_position=cache_position,
+        **kwargs,
     )
 
     hidden_states = outputs.last_hidden_state
@@ -93,24 +89,26 @@ def lce_forward(
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
-    shift_labels = loss_kwargs.pop("shift_labels", None)
+    shift_labels = kwargs.pop("shift_labels", None)
     logits = None
     loss = None
 
-    # if in training mode, do not materialize logits
-    if self.training and (labels is not None or shift_labels is not None):
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits:
         loss = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
-            **loss_kwargs,
+            **kwargs,
         )
     else:  # if in inference model materialize logits
         logits = self.lm_head(kept_hidden_states)
         if labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
+            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
 
     aux_loss = None
     if output_router_logits:

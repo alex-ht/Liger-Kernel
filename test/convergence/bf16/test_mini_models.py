@@ -69,20 +69,26 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
-    # Qwen2-VL is only available in transformers>4.44.2
+    # Qwen2-VL is only available in transformers>4.52.4
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
 
-    QWEN2_VL_AVAILABLE = True
+    QWEN2_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_VL_AVAILABLE = False
 
 try:
-    # Qwen2.5-VL is only available in transformers>4.48.2
+    # Qwen2.5-VL is only available in transformers>4.52.4
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
 
-    QWEN2_5_VL_AVAILABLE = True
+    QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
 
@@ -837,8 +843,21 @@ def run_mini_model(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
+    model.eval()
+    eval_batch = next(loader_iter).to(model.device)
+    if with_liger:
+        eval_batch["skip_logits"] = False
+    with torch.no_grad():
+        eval_output = model(**eval_batch)
+    print(f"Eval Loss: {eval_output.loss.item()}")
+    loss_list.append(eval_output.loss.item())
+
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    return {
+        "loss": loss_list,
+        "logits": eval_output.logits,
+        "model": model,
+    }
 
 
 @pytest.mark.parametrize(
@@ -883,8 +902,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
-            1e-2,
+            1,  # 1e-1
+            1e-1,  # 1e-2
             1e-2,
             1e-2,
             marks=[
@@ -953,8 +972,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
-            1e-2,
+            1,  # 1e-1
+            1e-1,  # 1e-2
             1e-2,
             1e-2,
             marks=[
@@ -972,8 +991,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             5e-2,
-            1e-1,
-            1e-2,
+            1,  # 1e-1
+            1e-1,  # 1e-2
             1e-2,
             1e-2,
             marks=[
@@ -984,6 +1003,7 @@ def run_mini_model(
                 ),
             ],
         ),
+        # TODO: logits tolerances are significantly larger than the other tests, need to investigate
         pytest.param(
             "mini_qwen2_5_vl",
             32,
@@ -991,8 +1011,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             5e-2,
-            1e-1,
-            1e-2,
+            3,  # 1e-1
+            1e-1,  # 1e-2
             1e-2,
             1e-2,
             marks=[
@@ -1173,15 +1193,14 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # No logits are materialized
-
-    # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
+    # Compare the logits from evaluation step
+    if expected_output["logits"] is not None and actual_output["logits"] is not None:
+        assert_verbose_allclose(
+            expected_output["logits"],
+            actual_output["logits"],
+            atol=logits_atol,
+            rtol=logits_rtol,
+        )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them

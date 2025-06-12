@@ -63,6 +63,8 @@
 
 We've also added optimized Post-Training kernels that deliver **up to 80% memory savings** for alignment and distillation tasks. We support losses like DPO, CPO, ORPO, SimPO, KTO, JSD, and many more. Check out [how we optimize the memory](https://x.com/hsu_byron/status/1866577403918917655).
 
+You can view the documentation site for additional installation, usage examples, and API references:https://linkedin.github.io/Liger-Kernel/
+
 ## Supercharge Your Model with Liger Kernel
 
 ![Banner](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/banner.GIF)
@@ -274,7 +276,10 @@ loss.backward()
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
-| Fused Linear CrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
+| Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
+| Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
 
 
 ### Alignment Kernels

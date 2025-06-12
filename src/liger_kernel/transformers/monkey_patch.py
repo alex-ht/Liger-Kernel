@@ -36,6 +36,13 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
+try:
+    import peft
+
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+
 transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
@@ -49,22 +56,68 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True):
-    module.offset = offset
-    module.casting_mode = casting_mode
-    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.in_place = in_place
-    _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
-    _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
-    module.__class__.__name__ = LigerRMSNorm.__name__
+    # Check if the module is a PEFT ModulesToSaveWrapper
+    # If it is, we need to patch the modules_to_save.default and original_modules
+    if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+        module.modules_to_save.default.offset = offset
+        module.modules_to_save.default.casting_mode = casting_mode
+        module.modules_to_save.default.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.modules_to_save.default.in_place = in_place
+        module.original_module.offset = offset
+        module.original_module.casting_mode = casting_mode
+        module.original_module.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.original_module.in_place = in_place
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.modules_to_save.default.__class__.__name__ = LigerRMSNorm.__name__
+        module.original_module.__class__.__name__ = LigerRMSNorm.__name__
+    else:
+        module.offset = offset
+        module.casting_mode = casting_mode
+        module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.in_place = in_place
+        _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.__class__.__name__ = LigerRMSNorm.__name__
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
-    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
-
-    _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
-    _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
-    module.__class__.__name__ = LigerLayerNorm.__name__
+    # Check if the module is a PEFT ModulesToSaveWrapper
+    # If it is, we need to patch the modules_to_save.default and original_modules
+    if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+        module.hidden_size = module.normalized_shape
+        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+        module.modules_to_save.default.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+            module, "normalized_shape", None
+        )
+        module.original_module.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+            module, "normalized_shape", None
+        )
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.modules_to_save.default.__class__.__name__ = LigerLayerNorm.__name__
+        module.original_module.__class__.__name__ = LigerLayerNorm.__name__
+    else:
+        module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+        module.__class__.__name__ = LigerLayerNorm.__name__
 
 
 def _patch_swiglu_module(module, liger_module):
@@ -262,13 +315,14 @@ def apply_liger_kernel_to_llava(
         logger.warning(TRANSFORMER_DEPRECATION_WARNING)
         modeling_llava.nn.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse("4.49.0"):
+        if transformer_version >= version.parse("4.52.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        elif transformer_version >= version.parse("4.49.0") and transformer_version < version.parse("4.52.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
         else:  # if version < 4.49.0
             logger.warning(
-                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+                "The latest version of Liger does not support transformers < 4.49.0 for llava. Please downgrade your liger version or upgrade your transformer version."
             )
-            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
 
     if model is not None:
         text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
@@ -376,13 +430,14 @@ def apply_liger_kernel_to_mllama(
         if isinstance(model, MllamaForConditionalGeneration):
             language_model: MllamaForCausalLM = model.language_model
             vision_model: MllamaVisionModel = model.vision_model
-            text_model: MllamaTextModel = language_model.model
+            text_model: MllamaTextModel = language_model
         elif isinstance(model, MllamaForCausalLM):
             text_model = model.model
             vision_model = None
         elif isinstance(model, MllamaTextModel):
             text_model = model
             vision_model = None
+
         else:
             raise ValueError(f"Unsupported Mllama model type: {type(model)}")
 
@@ -639,8 +694,8 @@ def apply_liger_kernel_to_gemma(
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaModel
 
-    # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-    LigerRMSNormForGemma = partial(LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma")
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma
+
     _patch_rms_norm_module_for_gemma = partial(_patch_rms_norm_module, casting_mode="gemma", offset=1.0)
 
     if rope:
@@ -713,7 +768,8 @@ def apply_liger_kernel_to_gemma2(
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
-    LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma2
+
     _patch_rms_norm_module_for_gemma2 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
@@ -790,9 +846,10 @@ def apply_liger_kernel_to_gemma3_text(
     from transformers.models.gemma3 import modeling_gemma3
     from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
-    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
     from liger_kernel.transformers.model.gemma3 import causal_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3
 
     _patch_rms_norm_module_for_gemma3 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
@@ -820,9 +877,9 @@ def apply_liger_kernel_to_gemma3_text(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if isinstance(model, Gemma3ForCausalLM):
+        if isinstance(model, Gemma3ForCausalLM) or isinstance(model, Gemma3TextModel):
             # get the base model from the model instance
-            base_model = model.model
+            base_model = model.model if isinstance(model, Gemma3ForCausalLM) else model
 
             if rms_norm:
                 _patch_rms_norm_module_for_gemma3(base_model.norm)
@@ -1234,7 +1291,7 @@ def apply_liger_kernel_to_qwen2_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not available in transformers<4.45.0
+    NOTE: Qwen2-VL is not supported in transformers<4.52.4
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -1248,12 +1305,19 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    if transformer_version < version.parse("4.52.4"):
+        logger.warning("Qwen2-VL support is only compatible with transformers >= 4.52.4")
+        return
+
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VisionTransformerPretrainedModel
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLTextModel
 
     from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
@@ -1275,24 +1339,38 @@ def apply_liger_kernel_to_qwen2_vl(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        # get the base model from the model instance
-        base_model: Qwen2VLModel = getattr(model, model.base_model_prefix, model)
+        if isinstance(model, (Qwen2VLForConditionalGeneration, Qwen2VLModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/v4.52.4/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L1698
+            text_model: Qwen2VLTextModel = model.language_model
+            vision_model: Qwen2VisionTransformerPretrainedModel = model.visual
+        elif isinstance(model, Qwen2VLTextModel):
+            text_model: Qwen2VLTextModel = model
+            vision_model = None
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported Qwen2VL model type. `model` must be `Qwen2VLForConditionalGeneration`, `Qwen2VLModel` or `Qwen2VLTextModel`. Got: {type(model)}"
+            )
 
-        if hasattr(model, "visual"):
-            # Patch Qwen2VisionTransformerPretrainedModel
-            for vision_block in model.visual.blocks:
+        # Patch Qwen2VisionTransformerPretrainedModel
+        if vision_model is not None:
+            for vision_block in vision_model.blocks:
                 if layer_norm:
                     _patch_layer_norm_module(vision_block.norm1)
                     _patch_layer_norm_module(vision_block.norm2)
 
-        if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
-        for decoder_layer in base_model.layers:
-            if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+        # Patch Qwen2VisionTextModel
+        if text_model is not None:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_qwen2_5_vl(
@@ -1318,12 +1396,19 @@ def apply_liger_kernel_to_qwen2_5_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    if transformer_version < version.parse("4.52.4"):
+        logger.warning("Qwen2.5-VL support is only compatible with transformers >= 4.52.4")
+        return
+
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
     from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLTextModel
 
     from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
@@ -1342,24 +1427,37 @@ def apply_liger_kernel_to_qwen2_5_vl(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        # get the base model from the model instance
-        base_model: Qwen2_5_VLModel = getattr(model, model.base_model_prefix, model)
+        if isinstance(model, (Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/v4.52.4/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L1823
+            text_model: Qwen2_5_VLTextModel = model.language_model
+            vision_model: Qwen2_5_VisionTransformerPretrainedModel = model.visual
+        elif isinstance(model, Qwen2_5_VLTextModel):
+            text_model: Qwen2_5_VLTextModel = model
+            vision_model = None
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported Qwen2VL model type. `model` must be `Qwen2VLForConditionalGeneration`, `Qwen2VLModel` or `Qwen2VLTextModel`. Got: {type(model)}"
+            )
 
-        if hasattr(model, "visual"):
+        if vision_model is not None:
             # Patch Qwen2_5_VisionTransformerPretrainedModel
             for vision_block in model.visual.blocks:
                 if rms_norm:
                     _patch_rms_norm_module(vision_block.norm1)
                     _patch_rms_norm_module(vision_block.norm2)
 
-        if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
-        for decoder_layer in base_model.layers:
-            if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+        if text_model is not None:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_phi3(
@@ -1462,11 +1560,12 @@ def apply_liger_kernel_to_olmo2(
     from transformers.models.olmo2.modeling_olmo2 import Olmo2Model
 
     from liger_kernel.transformers.model.olmo2 import lce_forward as olmo2_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForOlmo2
 
     if rope:
         modeling_olmo2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_olmo2.Olmo2RMSNorm = partial(LigerRMSNorm, in_place=False)
+        modeling_olmo2.Olmo2RMSNorm = LigerRMSNormForOlmo2
     if swiglu:
         modeling_olmo2.Olmo2MLP = LigerSwiGLUMLP
     if cross_entropy:
@@ -1525,11 +1624,12 @@ def apply_liger_kernel_to_glm4(
     from transformers.models.glm4.modeling_glm4 import Glm4Model
 
     from liger_kernel.transformers.model.glm4 import lce_forward as glm4_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
 
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
     if rms_norm:
-        modeling_glm4.Glm4RMSNorm = partial(LigerRMSNorm, in_place=False)
+        modeling_glm4.Glm4RMSNorm = LigerRMSNormForGlm4
     if swiglu:
         modeling_glm4.Glm4MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
@@ -1579,7 +1679,9 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen3": apply_liger_kernel_to_qwen3,
     "qwen3_moe": apply_liger_kernel_to_qwen3_moe,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
+    "qwen2_vl_text": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
+    "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
 }
@@ -1639,7 +1741,6 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         return
 
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
-
     apply_fn_signature = inspect.signature(apply_fn)
 
     # Filter out the keyword arguments that are not supported by the apply function

@@ -20,6 +20,7 @@ from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import is_torchvision_available
 from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
@@ -34,26 +35,34 @@ from test.utils import set_seed
 from test.utils import train_bpe_tokenizer
 
 try:
-    # Qwen2-VL is only available in transformers>=4.45.0
+    # Qwen2-VL is only available in transformers>=4.52.4
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
     from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
+    from transformers.models.qwen2_vl.video_processing_qwen2_vl import Qwen2VLVideoProcessor
 
-    QWEN2_VL_AVAILABLE = True
+    QWEN2_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_VL_AVAILABLE = False
 
 try:
     # Qwen2.5-VL is only available in transformers>4.48.2
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen2_vl.video_processing_qwen2_vl import Qwen2VLVideoProcessor
 
-    QWEN2_5_VL_AVAILABLE = True
+    QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
 
@@ -501,7 +510,12 @@ def create_processor(model_name: str):
         )
         qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
-        return Qwen2VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
+        video_processor = Qwen2VLVideoProcessor()
+        return Qwen2VLProcessor(
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=qwen_tokenizer,
+        )
 
     elif model_name == "mini_qwen2_5_vl":
         tokenizer_config = load_tokenizer_config(
@@ -518,7 +532,12 @@ def create_processor(model_name: str):
         )
         qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
-        return Qwen2_5_VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
+        video_processor = Qwen2VLVideoProcessor()
+        return Qwen2_5_VLProcessor(
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=qwen_tokenizer,
+        )
 
     elif model_name == "mini_llava":
         tokenizer_config = load_tokenizer_config(
@@ -765,6 +784,7 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
+                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
         pytest.param(
@@ -799,6 +819,7 @@ def run_mini_model_multimodal(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
+                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
         pytest.param(
